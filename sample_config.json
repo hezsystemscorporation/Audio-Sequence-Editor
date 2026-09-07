@@ -1,0 +1,92 @@
+{
+  "sequenceName": "展厅全身遥操作",
+  "steps": [
+    {
+      "id": "1",
+      "title": "迎接环节",
+      "actions": [
+        {
+          "id": "1",
+          "name": "跑步迎接",
+          "audioFileNames": ["01-跑步迎接.mp3"],
+          "isMandatory": true
+        }
+      ]
+    },
+    {
+      "id": "2",
+      "title": "互动环节",
+      "actions": [
+        {
+          "id": "2-a",
+          "name": "送花",
+          "audioFileNames": ["02-送花.mp3"],
+          "isMandatory": true
+        },
+        {
+          "id": "2-b",
+          "name": "打招呼握手",
+          "audioFileNames": ["03-打招呼握手.mp3"],
+          "isMandatory": true
+        }
+      ]
+    },
+    {
+      "id": "3",
+      "title": "表演环节",
+      "actions": [
+        {
+          "id": "3-a",
+          "name": "太极表演",
+          "audioFileNames": ["05-太极表演.mp3"],
+          "subAudioName": "背景音乐",
+          "subAudioFileName": "太极拳音乐.mp3",
+          "isMandatory": true
+        },
+        {
+          "id": "3-b",
+          "name": "拳击表演",
+          "audioFileNames": ["07-拳击表演.mp3"],
+          "isMandatory": true
+        }
+      ]
+    },
+    {
+      "id": "4",
+      "title": "其他动作",
+      "actions": [
+        {
+          "id": "4-a",
+          "name": "快速蹲起",
+          "audioFileNames": ["06-快速蹲起.mp3"],
+          "isMandatory": true
+        },
+        {
+          "id": "4-b",
+          "name": "模仿周总",
+          "audioFileNames": ["08-模仿周总.mp3"],
+          "isMandatory": true
+        },
+        {
+          "id": "4-c",
+          "name": "转身归位",
+          "audioFileNames": ["04-转身归位.mp3"],
+          "isMandatory": true
+        }
+      ]
+    },
+    {
+      "id": "5",
+      "title": "告别",
+      "actions": [
+        {
+          "id": "5",
+          "name": "告别",
+          "audioFileNames": ["09-告别.mp3"],
+          "isMandatory": true
+        }
+      ]
+    }
+  ],
+  "otherBroadcasts": []
+}

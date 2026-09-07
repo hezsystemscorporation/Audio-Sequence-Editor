@@ -1,0 +1,1051 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Audio Sequence Editor</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="https://cdn.jsdelivr.net/npm/localforage@1.10.0/dist/localforage.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
+<style>
+.drag-over { outline: 2px dashed #3b82f6; outline-offset: -2px; background: #eff6ff !important; }
+.dragging { opacity: 0.4; }
+.drag-handle { cursor: grab; }
+.drag-handle:active { cursor: grabbing; }
+.lang-tab { padding: 3px 10px; border-radius: 4px; cursor: pointer; font-size: 11px; font-weight: 600; border: 1px solid #d1d5db; transition: all 0.15s; background: #f3f4f6; color: #6b7280; white-space: nowrap; }
+.lang-tab.active { background: #3b82f6; color: #fff; border-color: #3b82f6; }
+.lang-tab:not(.active):hover { background: #e5e7eb; }
+.lang-pill { display: inline-flex; align-items: center; gap: 4px; padding: 4px 10px; border-radius: 9999px; font-size: 12px; font-weight: 600; background: #dbeafe; color: #1d4ed8; border: 1px solid #93c5fd; }
+.lang-pill .lang-pill-x { cursor: pointer; font-weight: bold; color: #ef4444; margin-left: 2px; }
+.lang-pill .lang-pill-x:hover { color: #b91c1c; }
+.audio-preview-btn { display: inline-flex; align-items: center; justify-content: center; width: 22px; height: 22px; border-radius: 50%; background: #3b82f6; color: #fff; border: none; cursor: pointer; font-size: 10px; flex-shrink: 0; transition: background 0.15s; line-height: 1; }
+.audio-preview-btn:hover { background: #2563eb; }
+.audio-preview-btn.playing { background: #ef4444; }
+</style>
+</head>
+<body class="bg-gray-50 min-h-screen">
+<div class="max-w-5xl mx-auto p-6">
+  <div class="flex items-center justify-between mb-6">
+    <h1 class="text-2xl font-bold text-gray-800">Audio Sequence Editor</h1>
+    <div class="flex gap-3">
+      <button id="btnImport" class="px-4 py-2 bg-green-500 text-white rounded-lg hover:bg-green-600 text-sm">Import ZIP</button>
+      <input type="file" id="fileImport" accept=".zip" class="hidden">
+      <button id="btnClearDraft" class="px-4 py-2 bg-red-500 text-white rounded-lg hover:bg-red-600 text-sm">Clear</button>
+      <button id="btnExport" class="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 text-sm font-medium">Export ZIP</button>
+    </div>
+  </div>
+
+  <div class="mb-4 bg-white rounded-xl shadow-sm p-4 border">
+    <label class="block text-sm font-medium text-gray-700 mb-2">Languages</label>
+    <div class="flex flex-wrap gap-2 mb-2" id="langTags"></div>
+    <div class="flex gap-2">
+      <input type="text" id="newLangInput" placeholder="Enter language name (e.g. English, 日本語)" class="flex-1 border rounded-lg px-3 py-1.5 text-sm">
+      <button id="btnAddLang" class="px-4 py-1.5 bg-indigo-500 text-white rounded-lg text-sm hover:bg-indigo-600 font-medium">+ Add Language</button>
+    </div>
+  </div>
+
+  <div class="mb-6 bg-white rounded-xl shadow-sm p-4 border">
+    <label class="block text-sm font-medium text-gray-700 mb-1">Sequence Name</label>
+    <input id="sequenceName" type="text" class="w-full border rounded-lg px-3 py-2 text-sm" placeholder="Default Sequence">
+  </div>
+
+  <div id="stepsContainer"></div>
+
+  <button id="btnAddStep" class="w-full mt-4 py-3 border-2 border-dashed border-blue-400 text-blue-600 rounded-xl hover:bg-blue-50 font-medium">+ New Step</button>
+
+  <div class="mt-6 bg-white rounded-xl shadow-sm p-4 border">
+    <h2 class="text-lg font-semibold mb-3">Global Broadcast</h2>
+    <div id="broadcastsContainer"></div>
+    <button id="btnAddBroadcast" class="mt-3 px-4 py-2 bg-green-500 text-white rounded-lg hover:bg-green-600 text-sm">+ New Broadcast</button>
+  </div>
+</div>
+
+<script>
+const store = localforage.createInstance({ name: "seq_editor_files" });
+const DRAFT_KEY = "seq_editor_draft";
+let state = { languages: ["中文"], sequenceName: "", steps: [], broadcasts: [] };
+let fileStore = {};
+let dragState = null;
+let currentPlayingBtn = null;
+let currentAudioEl = null;
+
+function uid() { return Date.now().toString(36) + Math.random().toString(36).slice(2, 7); }
+
+function emptyLangObj() {
+  const o = {};
+  state.languages.forEach(l => { o[l] = []; });
+  return o;
+}
+function emptyLangStr() {
+  const o = {};
+  state.languages.forEach(l => { o[l] = ""; });
+  return o;
+}
+
+function defaultAction(stepId) {
+  return { uid: uid(), id: stepId, name: "", en_des: "", isMandatory: true, audioFileNames: emptyLangObj(), subAudioName: emptyLangStr(), subAudioFileName: emptyLangStr(), subAudioEnDes: emptyLangStr(), imageFileName: "" };
+}
+
+function defaultStep() {
+  const id = String(state.steps.length + 1);
+  return { uid: uid(), id, title: "", actions: [defaultAction(id)] };
+}
+
+function defaultBroadcast() {
+  return { uid: uid(), name: "", en_des: emptyLangStr(), audioFileName: emptyLangStr() };
+}
+
+function ensureLangFields(action) {
+  if (!action.audioFileNames || typeof action.audioFileNames !== "object" || Array.isArray(action.audioFileNames)) {
+    const old = Array.isArray(action.audioFileNames) ? action.audioFileNames : [];
+    action.audioFileNames = {};
+    state.languages.forEach((l, i) => { action.audioFileNames[l] = i === 0 ? [...old] : []; });
+  } else {
+    state.languages.forEach(l => { if (!action.audioFileNames[l]) action.audioFileNames[l] = []; });
+  }
+  if (!action.subAudioFileName || typeof action.subAudioFileName !== "object" || Array.isArray(action.subAudioFileName)) {
+    const old = typeof action.subAudioFileName === "string" ? action.subAudioFileName : "";
+    action.subAudioFileName = {};
+    state.languages.forEach((l, i) => { action.subAudioFileName[l] = i === 0 ? old : ""; });
+  } else {
+    state.languages.forEach(l => { if (action.subAudioFileName[l] === undefined) action.subAudioFileName[l] = ""; });
+  }
+  if (!action.subAudioName || typeof action.subAudioName !== "object" || Array.isArray(action.subAudioName)) {
+    const old = typeof action.subAudioName === "string" ? action.subAudioName : "";
+    action.subAudioName = {};
+    state.languages.forEach((l, i) => { action.subAudioName[l] = i === 0 ? old : ""; });
+  } else {
+    state.languages.forEach(l => { if (action.subAudioName[l] === undefined) action.subAudioName[l] = ""; });
+  }
+  if (!action.subAudioEnDes || typeof action.subAudioEnDes !== "object" || Array.isArray(action.subAudioEnDes)) {
+    const old = typeof action.subAudioEnDes === "string" ? action.subAudioEnDes : "";
+    action.subAudioEnDes = {};
+    state.languages.forEach((l, i) => { action.subAudioEnDes[l] = i === 0 ? old : ""; });
+  } else {
+    state.languages.forEach(l => { if (action.subAudioEnDes[l] === undefined) action.subAudioEnDes[l] = ""; });
+  }
+}
+
+function ensureBroadcastLangFields(b) {
+  if (!b.audioFileName || typeof b.audioFileName !== "object" || Array.isArray(b.audioFileName)) {
+    const old = typeof b.audioFileName === "string" ? b.audioFileName : "";
+    b.audioFileName = {};
+    state.languages.forEach((l, i) => { b.audioFileName[l] = i === 0 ? old : ""; });
+  } else {
+    state.languages.forEach(l => { if (b.audioFileName[l] === undefined) b.audioFileName[l] = ""; });
+  }
+  if (!b.en_des || typeof b.en_des !== "object" || Array.isArray(b.en_des)) {
+    const old = typeof b.en_des === "string" ? b.en_des : "";
+    b.en_des = {};
+    state.languages.forEach((l, i) => { b.en_des[l] = i === 0 ? old : ""; });
+  } else {
+    state.languages.forEach(l => { if (b.en_des[l] === undefined) b.en_des[l] = ""; });
+  }
+}
+
+function saveDraft() {
+  const data = {
+    languages: [...state.languages],
+    sequenceName: state.sequenceName,
+    steps: state.steps.map(s => ({
+      id: s.id, title: s.title,
+      actions: s.actions.map(a => ({
+        id: a.id, name: a.name, en_des: a.en_des || "", isMandatory: a.isMandatory,
+        audioFileNames: a.audioFileNames,
+        subAudioName: a.subAudioName, subAudioFileName: a.subAudioFileName,
+        subAudioEnDes: a.subAudioEnDes,
+        imageFileName: a.imageFileName
+      }))
+    })),
+    broadcasts: state.broadcasts.map(b => ({ name: b.name, en_des: b.en_des, audioFileName: b.audioFileName }))
+  };
+  localStorage.setItem(DRAFT_KEY, JSON.stringify(data));
+}
+
+async function saveFiles() {
+  for (const [key, blob] of Object.entries(fileStore)) {
+    await store.setItem(key, blob);
+  }
+  await store.setItem("__file_keys__", Object.keys(fileStore));
+}
+
+async function restoreDraft() {
+  const raw = localStorage.getItem(DRAFT_KEY);
+  if (!raw) return false;
+  try {
+    const data = JSON.parse(raw);
+    state.languages = (data.languages && data.languages.length) ? data.languages : ["中文"];
+    state.sequenceName = data.sequenceName || "";
+    state.steps = (data.steps || []).map(s => ({
+      ...s, uid: uid(),
+      actions: s.actions.map(a => { const na = { ...a, uid: uid() }; ensureLangFields(na); return na; })
+    }));
+    state.broadcasts = (data.broadcasts || []).map(b => { const nb = { ...b, uid: uid() }; ensureBroadcastLangFields(nb); return nb; });
+  } catch { return false; }
+
+  const keys = await store.getItem("__file_keys__");
+  if (keys) {
+    for (const k of keys) {
+      const blob = await store.getItem(k);
+      if (blob) {
+        if (blob instanceof File) {
+          fileStore[k] = blob;
+        } else {
+          fileStore[k] = new File([blob], k, { type: blob.type });
+        }
+      }
+    }
+  }
+  return true;
+}
+
+function getReferencedFiles() {
+  const referenced = new Set();
+  state.steps.forEach(s => {
+    s.actions.forEach(a => {
+      Object.values(a.audioFileNames || {}).forEach(arr => arr.forEach(f => referenced.add(f)));
+      Object.values(a.subAudioFileName || {}).forEach(f => { if (f) referenced.add(f); });
+      if (a.imageFileName) referenced.add(a.imageFileName);
+    });
+  });
+  state.broadcasts.forEach(b => {
+    Object.values(b.audioFileName || {}).forEach(f => { if (f) referenced.add(f); });
+  });
+  return referenced;
+}
+
+function cleanupFileStore() {
+  const referenced = getReferencedFiles();
+  const toRemove = Object.keys(fileStore).filter(k => !referenced.has(k));
+  toRemove.forEach(k => delete fileStore[k]);
+  if (toRemove.length > 0) saveFiles();
+}
+
+function stopAudioPreview() {
+  if (currentAudioEl) {
+    currentAudioEl.pause();
+    currentAudioEl.currentTime = 0;
+    URL.revokeObjectURL(currentAudioEl.src);
+    currentAudioEl = null;
+  }
+  if (currentPlayingBtn) {
+    currentPlayingBtn.classList.remove("playing");
+    currentPlayingBtn.textContent = "\u25B6";
+    currentPlayingBtn = null;
+  }
+}
+
+function toggleAudioPreview(fileName, btn) {
+  if (currentPlayingBtn === btn) { stopAudioPreview(); return; }
+  stopAudioPreview();
+  const file = fileStore[fileName];
+  if (!file) return;
+  const url = URL.createObjectURL(file);
+  const audio = new Audio(url);
+  currentAudioEl = audio;
+  currentPlayingBtn = btn;
+  btn.classList.add("playing");
+  btn.textContent = "\u25A0";
+  audio.onended = () => stopAudioPreview();
+  audio.onerror = () => stopAudioPreview();
+  audio.play().catch(() => stopAudioPreview());
+}
+
+function previewBtnHtml(fileName) {
+  return `<button class="audio-preview-btn" data-preview-audio="${esc(fileName)}" title="${esc(fileName)}">\u25B6</button>`;
+}
+
+function esc(s) { return (s || "").replace(/"/g, "&quot;").replace(/</g, "&lt;"); }
+
+function renderLangTags() {
+  const container = document.getElementById("langTags");
+  container.innerHTML = "";
+  state.languages.forEach((lang, li) => {
+    const span = document.createElement("span");
+    span.className = "lang-pill";
+    span.innerHTML = `${esc(lang)}${state.languages.length > 1 ? `<span class="lang-pill-x" data-del-lang="${li}" title="Remove">&times;</span>` : ""}`;
+    container.appendChild(span);
+  });
+  container.querySelectorAll("[data-del-lang]").forEach(el => {
+    el.onclick = () => {
+      const li = +el.dataset.delLang;
+      const lang = state.languages[li];
+      if (!confirm(`Remove language "${lang}"? All audio files for this language will be cleared.`)) return;
+      state.languages.splice(li, 1);
+      state.steps.forEach(s => s.actions.forEach(a => {
+        delete a.audioFileNames[lang];
+        delete a.subAudioFileName[lang];
+        delete a.subAudioName[lang];
+        if (a.subAudioEnDes) delete a.subAudioEnDes[lang];
+      }));
+      state.broadcasts.forEach(b => { delete b.audioFileName[lang]; if (b.en_des) delete b.en_des[lang]; });
+      cleanupFileStore(); saveDraft(); saveFiles(); render();
+    };
+  });
+}
+
+function render() {
+  document.getElementById("sequenceName").value = state.sequenceName;
+  renderLangTags();
+  renderSteps();
+  renderBroadcasts();
+}
+
+function renderLangTabs(si, ai, type) {
+  return `<div class="flex flex-wrap gap-1 mb-2">${state.languages.map(lang =>
+    `<button class="lang-tab${state.languages.indexOf(lang) === 0 ? ' active' : ''}" data-lang-tab="${type}-${si}-${ai}" data-lang-tab-lang="${esc(lang)}">${esc(lang)}</button>`
+  ).join("")}</div>`;
+}
+
+function renderBroadcastLangTabs(bi) {
+  return `<div class="flex flex-wrap gap-1 mb-2">${state.languages.map(lang =>
+    `<button class="lang-tab${state.languages.indexOf(lang) === 0 ? ' active' : ''}" data-broadcast-lang-tab="${bi}" data-lang-tab-lang="${esc(lang)}">${esc(lang)}</button>`
+  ).join("")}</div>`;
+}
+
+function renderAudioPanelsForAction(si, ai) {
+  const action = state.steps[si].actions[ai];
+  return state.languages.map((lang, li) => {
+    const files = action.audioFileNames[lang] || [];
+    const subFile = action.subAudioFileName[lang] || "";
+    const subName = action.subAudioName[lang] || "";
+    const subEnDes = (action.subAudioEnDes && action.subAudioEnDes[lang]) || "";
+    return `<div data-audio-panel="${si}-${ai}" data-audio-panel-lang="${esc(lang)}" style="${li > 0 ? 'display:none' : ''}">
+      <div>
+        <label class="text-xs text-gray-500">Main Audio — <b>${esc(lang)}</b> (Multi-choosing Allowed)</label>
+        <input type="file" accept="audio/*" multiple class="w-full text-xs" data-action-audio="${si}-${ai}" data-audio-lang="${esc(lang)}">
+        ${files.length ? `<div class="mt-1 space-y-1">${files.map((fn, fi) => `
+          <div class="flex items-center gap-1 text-xs text-gray-500 bg-white border rounded px-2 py-1">
+            ${previewBtnHtml(fn)}
+            <span class="flex-1 truncate">${esc(fn)}</span>
+            <button class="text-red-400 hover:text-red-600 font-bold" data-remove-audio="${si}-${ai}-${esc(lang)}-${fi}" title="Remove">&times;</button>
+          </div>
+        `).join("")}</div>` : ""}
+      </div>
+      <div class="mt-2">
+        <label class="text-xs text-gray-500">Sub Audio — <b>${esc(lang)}</b></label>
+        <div class="flex items-center gap-2">
+          <input type="file" accept="audio/*" class="flex-1 text-xs" data-action-sub-audio="${si}-${ai}" data-audio-lang="${esc(lang)}">
+          ${subFile ? `
+            ${previewBtnHtml(subFile)}
+            <span class="text-xs text-gray-400 truncate flex-1">${esc(subFile)}</span>
+            <button class="text-red-400 hover:text-red-600 font-bold text-xs" data-remove-sub-audio="${si}-${ai}-${esc(lang)}" title="Remove">&times;</button>
+          ` : ""}
+        </div>
+      </div>
+      ${subFile ? `
+      <div class="mt-2">
+        <label class="text-xs text-gray-500">Sub Audio Name — <b>${esc(lang)}</b></label>
+        <input type="text" value="${esc(subName)}" class="w-full border rounded px-2 py-1 text-sm" data-action-sub-name="${si}-${ai}" data-sub-name-lang="${esc(lang)}">
+      </div>
+      <div class="mt-2">
+        <label class="text-xs text-gray-500">Sub Audio EN Description <span class="text-red-400">*</span> <span class="text-gray-400">(max 32 chars)</span></label>
+        <input type="text" value="${esc(subEnDes)}" maxlength="32" class="w-full border rounded px-2 py-1 text-sm" data-action-sub-en-des="${si}-${ai}" data-sub-en-des-lang="${esc(lang)}" placeholder="Required, max 32 characters">
+      </div>
+      ` : ""}
+    </div>`;
+  }).join("");
+}
+
+function renderAudioPanelsForBroadcast(bi) {
+  const b = state.broadcasts[bi];
+  return state.languages.map((lang, li) => {
+    const audioFile = b.audioFileName[lang] || "";
+    const enDes = (b.en_des && b.en_des[lang]) || "";
+    return `<div data-broadcast-audio-panel="${bi}" data-broadcast-audio-panel-lang="${esc(lang)}" style="${li > 0 ? 'display:none' : ''}">
+      <div class="flex items-center gap-2">
+        <input type="file" accept="audio/*" class="text-xs flex-1" data-broadcast-audio="${bi}" data-audio-lang="${esc(lang)}">
+        ${audioFile ? `
+          ${previewBtnHtml(audioFile)}
+          <span class="text-xs text-gray-400 truncate">${esc(audioFile)}</span>
+          <button class="text-red-400 hover:text-red-600 font-bold text-xs" data-remove-broadcast-audio="${bi}-${esc(lang)}" title="Remove">&times;</button>
+        ` : ""}
+      </div>
+      <div class="mt-2">
+        <label class="text-xs text-gray-500">EN Description <span class="text-red-400">*</span> <span class="text-gray-400">(max 32 chars)</span></label>
+        <input type="text" value="${esc(enDes)}" maxlength="32" class="w-full border rounded px-2 py-1 text-sm" data-broadcast-en-des="${bi}" data-broadcast-en-des-lang="${esc(lang)}" placeholder="Required, max 32 characters">
+      </div>
+    </div>`;
+  }).join("");
+}
+
+function renderSteps() {
+  const container = document.getElementById("stepsContainer");
+  container.innerHTML = "";
+  state.steps.forEach((step, si) => {
+    const div = document.createElement("div");
+    div.className = "bg-white rounded-xl shadow-sm p-5 border mb-4";
+    div.dataset.stepIndex = si;
+    div.draggable = true;
+    const canAddBranch = step.actions.length < 3;
+    div.innerHTML = `
+      <div class="flex items-center justify-between mb-3">
+        <div class="flex items-center gap-3 flex-1">
+          <span class="drag-handle text-gray-400 hover:text-gray-600 text-lg select-none" title="Drag to reorder">&#x2630;</span>
+          <span class="bg-blue-100 text-blue-700 text-xs font-bold px-2 py-1 rounded">Step ${step.id}</span>
+          <input type="text" value="${esc(step.title)}" placeholder="Step Name"
+            class="flex-1 border rounded-lg px-3 py-1.5 text-sm" data-step-title="${si}">
+        </div>
+        <div class="flex items-center gap-2 ml-3">
+          <button class="text-green-500 hover:text-green-700 text-xs border border-green-300 rounded px-2 py-1" data-insert-step-before="${si}" title="Insert step before">+ Before</button>
+          <button class="text-green-500 hover:text-green-700 text-xs border border-green-300 rounded px-2 py-1" data-insert-step-after="${si}" title="Insert step after">+ After</button>
+          <button class="text-red-400 hover:text-red-600 text-sm" data-del-step="${si}">Delete</button>
+        </div>
+      </div>
+      <div class="space-y-2" data-actions-list="${si}">
+        ${step.actions.map((action, ai) => `
+          ${ai > 0 ? `<div class="flex justify-center py-1"><button class="text-green-500 hover:text-green-700 text-xs border border-dashed border-green-300 rounded px-3 py-0.5 hover:bg-green-50" data-insert-action="${si}-${ai}" ${canAddBranch ? '' : 'disabled class="opacity-30 cursor-not-allowed"'}>+ Insert Action Here</button></div>` : ''}
+          <div class="border rounded-lg p-3 bg-gray-50 relative" data-action-card="${si}-${ai}" ${step.actions.length > 1 ? 'draggable="true"' : ''}>
+            <div class="flex items-center justify-between mb-2">
+              <div class="flex items-center gap-2">
+                ${step.actions.length > 1 ? `<span class="drag-handle text-gray-400 hover:text-gray-600 select-none" title="Drag to reorder">&#x2630;</span>` : ''}
+                <span class="text-xs font-semibold text-gray-500">Action ${String.fromCharCode(65 + ai)}</span>
+              </div>
+              ${step.actions.length > 1 ? `<button class="text-red-400 hover:text-red-600 text-xs" data-del-action="${si}-${ai}">Delete</button>` : ""}
+            </div>
+            <div class="space-y-2">
+              <div>
+                <label class="text-xs text-gray-500">Action Name</label>
+                <input type="text" value="${esc(action.name)}" class="w-full border rounded px-2 py-1 text-sm" data-action-name="${si}-${ai}">
+              </div>
+              <div>
+                <label class="text-xs text-gray-500">EN Description <span class="text-red-400">*</span> <span class="text-gray-400">(max 32 chars)</span></label>
+                <input type="text" value="${esc(action.en_des || "")}" maxlength="32" class="w-full border rounded px-2 py-1 text-sm" data-action-en-des="${si}-${ai}" placeholder="Required, max 32 characters">
+              </div>
+              <div class="flex items-center gap-2">
+                <input type="checkbox" ${action.isMandatory ? "checked" : ""} data-action-mandatory="${si}-${ai}">
+                <label class="text-xs text-gray-500">Mandatory</label>
+              </div>
+              <div class="border-t pt-2 mt-2">
+                <div class="flex items-center justify-between mb-1">
+                  <label class="text-xs font-semibold text-gray-600">Audio Configuration</label>
+                </div>
+                ${renderLangTabs(si, ai, "action")}
+                ${renderAudioPanelsForAction(si, ai)}
+              </div>
+              <div class="border-t pt-2 mt-2">
+                <label class="text-xs text-gray-500">Image (shared across languages)</label>
+                <div class="flex items-center gap-2">
+                  <input type="file" accept="image/*" class="flex-1 text-xs" data-action-image="${si}-${ai}">
+                  ${action.imageFileName ? `
+                    <span class="text-xs text-gray-400 truncate flex-1">${esc(action.imageFileName)}</span>
+                    <button class="text-red-400 hover:text-red-600 font-bold text-xs" data-remove-image="${si}-${ai}" title="Remove">&times;</button>
+                  ` : ""}
+                </div>
+              </div>
+            </div>
+          </div>
+        `).join("")}
+      </div>
+      <div class="mt-3 flex gap-2">
+        <button class="px-3 py-1.5 bg-purple-500 text-white rounded-lg text-xs hover:bg-purple-600 ${canAddBranch ? '' : 'opacity-40 cursor-not-allowed'}"
+          data-add-branch="${si}" ${canAddBranch ? '' : 'disabled'}>+ Append Branch</button>
+      </div>
+    `;
+    container.appendChild(div);
+  });
+  bindStepEvents();
+  bindDragEvents();
+  bindLangTabEvents();
+  bindPreviewEvents();
+}
+
+function renderBroadcasts() {
+  const container = document.getElementById("broadcastsContainer");
+  container.innerHTML = "";
+  state.broadcasts.forEach((b, bi) => {
+    const div = document.createElement("div");
+    div.className = "border rounded-lg p-3 bg-gray-50 mb-3";
+    div.innerHTML = `
+      <div class="flex items-center gap-2 mb-2">
+        <input type="text" value="${esc(b.name)}" placeholder="Broadcast Name" class="flex-1 border rounded-lg px-3 py-1.5 text-sm" data-broadcast-name="${bi}">
+        <button class="text-red-400 hover:text-red-600 text-sm" data-del-broadcast="${bi}">Delete</button>
+      </div>
+      <div>
+        ${renderBroadcastLangTabs(bi)}
+        ${renderAudioPanelsForBroadcast(bi)}
+      </div>
+    `;
+    container.appendChild(div);
+  });
+  bindBroadcastEvents();
+  bindLangTabEvents();
+  bindPreviewEvents();
+}
+
+function bindLangTabEvents() {
+  document.querySelectorAll("[data-lang-tab]").forEach(tab => {
+    tab.onclick = () => {
+      const lang = tab.dataset.langTabLang;
+      tab.parentElement.querySelectorAll(".lang-tab").forEach(t => t.classList.remove("active"));
+      tab.classList.add("active");
+      const card = tab.closest("[data-action-card]");
+      if (card) {
+        card.querySelectorAll("[data-audio-panel]").forEach(p => p.style.display = "none");
+        const target = card.querySelector(`[data-audio-panel][data-audio-panel-lang="${lang}"]`);
+        if (target) target.style.display = "";
+      }
+    };
+  });
+  document.querySelectorAll("[data-broadcast-lang-tab]").forEach(tab => {
+    tab.onclick = () => {
+      const bi = tab.dataset.broadcastLangTab;
+      const lang = tab.dataset.langTabLang;
+      tab.parentElement.querySelectorAll(".lang-tab").forEach(t => t.classList.remove("active"));
+      tab.classList.add("active");
+      const container = tab.parentElement.parentElement;
+      container.querySelectorAll(`[data-broadcast-audio-panel="${bi}"]`).forEach(p => p.style.display = "none");
+      const target = container.querySelector(`[data-broadcast-audio-panel="${bi}"][data-broadcast-audio-panel-lang="${lang}"]`);
+      if (target) target.style.display = "";
+    };
+  });
+}
+
+function bindPreviewEvents() {
+  document.querySelectorAll("[data-preview-audio]").forEach(btn => {
+    btn.onclick = (e) => {
+      e.stopPropagation();
+      toggleAudioPreview(btn.dataset.previewAudio, btn);
+    };
+  });
+}
+
+function bindStepEvents() {
+  document.querySelectorAll("[data-step-title]").forEach(el => {
+    el.oninput = () => { state.steps[+el.dataset.stepTitle].title = el.value; saveDraft(); };
+  });
+  document.querySelectorAll("[data-del-step]").forEach(el => {
+    el.onclick = () => { state.steps.splice(+el.dataset.delStep, 1); reindexSteps(); cleanupFileStore(); saveDraft(); render(); };
+  });
+  document.querySelectorAll("[data-insert-step-before]").forEach(el => {
+    el.onclick = () => {
+      const si = +el.dataset.insertStepBefore;
+      state.steps.splice(si, 0, defaultStep());
+      reindexSteps(); saveDraft(); render();
+    };
+  });
+  document.querySelectorAll("[data-insert-step-after]").forEach(el => {
+    el.onclick = () => {
+      const si = +el.dataset.insertStepAfter;
+      state.steps.splice(si + 1, 0, defaultStep());
+      reindexSteps(); saveDraft(); render();
+    };
+  });
+  document.querySelectorAll("[data-add-branch]").forEach(el => {
+    el.onclick = () => {
+      const si = +el.dataset.addBranch;
+      if (state.steps[si].actions.length < 3) {
+        state.steps[si].actions.push(defaultAction(state.steps[si].id));
+        reindexSteps(); saveDraft(); render();
+      }
+    };
+  });
+  document.querySelectorAll("[data-insert-action]").forEach(el => {
+    el.onclick = () => {
+      const [si, ai] = el.dataset.insertAction.split("-").map(Number);
+      if (state.steps[si].actions.length < 3) {
+        state.steps[si].actions.splice(ai, 0, defaultAction(state.steps[si].id));
+        reindexSteps(); saveDraft(); render();
+      }
+    };
+  });
+  document.querySelectorAll("[data-del-action]").forEach(el => {
+    el.onclick = () => {
+      const [si, ai] = el.dataset.delAction.split("-").map(Number);
+      state.steps[si].actions.splice(ai, 1);
+      reindexSteps(); cleanupFileStore(); saveDraft(); render();
+    };
+  });
+  document.querySelectorAll("[data-action-name]").forEach(el => {
+    el.oninput = () => {
+      const [si, ai] = el.dataset.actionName.split("-").map(Number);
+      state.steps[si].actions[ai].name = el.value; saveDraft();
+    };
+  });
+  document.querySelectorAll("[data-action-en-des]").forEach(el => {
+    el.oninput = () => {
+      const [si, ai] = el.dataset.actionEnDes.split("-").map(Number);
+      state.steps[si].actions[ai].en_des = el.value; saveDraft();
+    };
+  });
+  document.querySelectorAll("[data-action-mandatory]").forEach(el => {
+    el.onchange = () => {
+      const [si, ai] = el.dataset.actionMandatory.split("-").map(Number);
+      state.steps[si].actions[ai].isMandatory = el.checked; saveDraft();
+    };
+  });
+  document.querySelectorAll("[data-sub-name-lang]").forEach(el => {
+    el.oninput = () => {
+      const [si, ai] = el.dataset.actionSubName.split("-").map(Number);
+      const lang = el.dataset.subNameLang;
+      state.steps[si].actions[ai].subAudioName[lang] = el.value; saveDraft();
+    };
+  });
+  document.querySelectorAll("[data-sub-en-des-lang]").forEach(el => {
+    el.oninput = () => {
+      const [si, ai] = el.dataset.actionSubEnDes.split("-").map(Number);
+      const lang = el.dataset.subEnDesLang;
+      if (!state.steps[si].actions[ai].subAudioEnDes) state.steps[si].actions[ai].subAudioEnDes = {};
+      state.steps[si].actions[ai].subAudioEnDes[lang] = el.value; saveDraft();
+    };
+  });
+  document.querySelectorAll("[data-action-audio]").forEach(el => {
+    el.onchange = async () => {
+      const [si, ai] = el.dataset.actionAudio.split("-").map(Number);
+      const lang = el.dataset.audioLang;
+      const action = state.steps[si].actions[ai];
+      const newNames = [];
+      for (const f of el.files) {
+        newNames.push(f.name);
+        fileStore[f.name] = f;
+      }
+      if (!action.audioFileNames[lang]) action.audioFileNames[lang] = [];
+      action.audioFileNames[lang] = [...action.audioFileNames[lang], ...newNames];
+      saveDraft(); await saveFiles(); cleanupFileStore(); render();
+    };
+  });
+  document.querySelectorAll("[data-remove-audio]").forEach(el => {
+    el.onclick = async () => {
+      const parts = el.dataset.removeAudio.split("-");
+      const fi = +parts.pop();
+      const si = +parts.shift();
+      const ai = +parts.shift();
+      const lang = parts.join("-");
+      state.steps[si].actions[ai].audioFileNames[lang].splice(fi, 1);
+      cleanupFileStore(); saveDraft(); await saveFiles(); render();
+    };
+  });
+  document.querySelectorAll("[data-action-sub-audio]").forEach(el => {
+    el.onchange = async () => {
+      const [si, ai] = el.dataset.actionSubAudio.split("-").map(Number);
+      const lang = el.dataset.audioLang;
+      if (el.files[0]) {
+        const f = el.files[0];
+        state.steps[si].actions[ai].subAudioFileName[lang] = f.name;
+        fileStore[f.name] = f;
+        saveDraft(); await saveFiles(); cleanupFileStore(); render();
+      }
+    };
+  });
+  document.querySelectorAll("[data-remove-sub-audio]").forEach(el => {
+    el.onclick = async () => {
+      const parts = el.dataset.removeSubAudio.split("-");
+      const si = +parts.shift();
+      const ai = +parts.shift();
+      const lang = parts.join("-");
+      state.steps[si].actions[ai].subAudioFileName[lang] = "";
+      cleanupFileStore(); saveDraft(); await saveFiles(); render();
+    };
+  });
+  document.querySelectorAll("[data-action-image]").forEach(el => {
+    el.onchange = async () => {
+      const [si, ai] = el.dataset.actionImage.split("-").map(Number);
+      if (el.files[0]) {
+        const f = el.files[0];
+        state.steps[si].actions[ai].imageFileName = f.name;
+        fileStore[f.name] = f;
+        saveDraft(); await saveFiles(); cleanupFileStore(); render();
+      }
+    };
+  });
+  document.querySelectorAll("[data-remove-image]").forEach(el => {
+    el.onclick = async () => {
+      const [si, ai] = el.dataset.removeImage.split("-").map(Number);
+      state.steps[si].actions[ai].imageFileName = "";
+      cleanupFileStore(); saveDraft(); await saveFiles(); render();
+    };
+  });
+}
+
+function bindBroadcastEvents() {
+  document.querySelectorAll("[data-broadcast-name]").forEach(el => {
+    el.oninput = () => { state.broadcasts[+el.dataset.broadcastName].name = el.value; saveDraft(); };
+  });
+  document.querySelectorAll("[data-broadcast-en-des]").forEach(el => {
+    el.oninput = () => {
+      const bi = +el.dataset.broadcastEnDes;
+      const lang = el.dataset.broadcastEnDesLang;
+      if (!state.broadcasts[bi].en_des) state.broadcasts[bi].en_des = {};
+      state.broadcasts[bi].en_des[lang] = el.value; saveDraft();
+    };
+  });
+  document.querySelectorAll("[data-broadcast-audio]").forEach(el => {
+    el.onchange = async () => {
+      const bi = +el.dataset.broadcastAudio;
+      const lang = el.dataset.audioLang;
+      if (el.files[0]) {
+        const f = el.files[0];
+        state.broadcasts[bi].audioFileName[lang] = f.name;
+        fileStore[f.name] = f;
+        saveDraft(); await saveFiles(); cleanupFileStore(); render();
+      }
+    };
+  });
+  document.querySelectorAll("[data-remove-broadcast-audio]").forEach(el => {
+    el.onclick = async () => {
+      const parts = el.dataset.removeBroadcastAudio.split("-");
+      const bi = +parts.shift();
+      const lang = parts.join("-");
+      state.broadcasts[bi].audioFileName[lang] = "";
+      cleanupFileStore(); saveDraft(); await saveFiles(); render();
+    };
+  });
+  document.querySelectorAll("[data-del-broadcast]").forEach(el => {
+    el.onclick = () => { state.broadcasts.splice(+el.dataset.delBroadcast, 1); cleanupFileStore(); saveDraft(); render(); };
+  });
+}
+
+function bindDragEvents() {
+  const stepCards = document.querySelectorAll("[data-step-index]");
+  stepCards.forEach(card => {
+    card.addEventListener("dragstart", (e) => {
+      if (e.target.closest("[data-action-card]")) return;
+      if (e.target.tagName === "INPUT" || e.target.tagName === "BUTTON") { e.preventDefault(); return; }
+      dragState = { type: "step", index: +card.dataset.stepIndex };
+      card.classList.add("dragging");
+      e.dataTransfer.effectAllowed = "move";
+      e.dataTransfer.setData("text/plain", "");
+    });
+    card.addEventListener("dragend", () => {
+      card.classList.remove("dragging");
+      document.querySelectorAll(".drag-over").forEach(el => el.classList.remove("drag-over"));
+      dragState = null;
+    });
+    card.addEventListener("dragover", (e) => {
+      if (!dragState || dragState.type !== "step") return;
+      if (e.target.closest("[data-action-card]")) return;
+      e.preventDefault();
+      e.dataTransfer.dropEffect = "move";
+      card.classList.add("drag-over");
+    });
+    card.addEventListener("dragleave", (e) => {
+      if (!card.contains(e.relatedTarget)) card.classList.remove("drag-over");
+    });
+    card.addEventListener("drop", (e) => {
+      if (!dragState || dragState.type !== "step") return;
+      if (e.target.closest("[data-action-card]")) return;
+      e.preventDefault();
+      card.classList.remove("drag-over");
+      const fromIdx = dragState.index;
+      const toIdx = +card.dataset.stepIndex;
+      if (fromIdx !== toIdx) {
+        const [moved] = state.steps.splice(fromIdx, 1);
+        state.steps.splice(toIdx, 0, moved);
+        reindexSteps(); saveDraft(); render();
+      }
+      dragState = null;
+    });
+  });
+
+  const actionCards = document.querySelectorAll("[data-action-card]");
+  actionCards.forEach(card => {
+    card.addEventListener("dragstart", (e) => {
+      if (e.target.tagName === "INPUT" || e.target.tagName === "BUTTON") { e.preventDefault(); return; }
+      const [si, ai] = card.dataset.actionCard.split("-").map(Number);
+      dragState = { type: "action", stepIndex: si, actionIndex: ai };
+      card.classList.add("dragging");
+      e.dataTransfer.effectAllowed = "move";
+      e.dataTransfer.setData("text/plain", "");
+      e.stopPropagation();
+    });
+    card.addEventListener("dragend", () => {
+      card.classList.remove("dragging");
+      document.querySelectorAll(".drag-over").forEach(el => el.classList.remove("drag-over"));
+      dragState = null;
+    });
+    card.addEventListener("dragover", (e) => {
+      if (!dragState || dragState.type !== "action") return;
+      const [si, ai] = card.dataset.actionCard.split("-").map(Number);
+      if (si !== dragState.stepIndex) return;
+      e.preventDefault();
+      e.stopPropagation();
+      e.dataTransfer.dropEffect = "move";
+      card.classList.add("drag-over");
+    });
+    card.addEventListener("dragleave", (e) => {
+      if (!card.contains(e.relatedTarget)) card.classList.remove("drag-over");
+    });
+    card.addEventListener("drop", (e) => {
+      if (!dragState || dragState.type !== "action") return;
+      const [toSi, toAi] = card.dataset.actionCard.split("-").map(Number);
+      if (toSi !== dragState.stepIndex) return;
+      e.preventDefault();
+      e.stopPropagation();
+      card.classList.remove("drag-over");
+      const fromAi = dragState.actionIndex;
+      if (fromAi !== toAi) {
+        const step = state.steps[toSi];
+        const [moved] = step.actions.splice(fromAi, 1);
+        step.actions.splice(toAi, 0, moved);
+        reindexSteps(); saveDraft(); render();
+      }
+      dragState = null;
+    });
+  });
+}
+
+function reindexSteps() {
+  state.steps.forEach((s, i) => {
+    s.id = String(i + 1);
+    if (s.actions.length === 1) s.actions[0].id = s.id;
+    else s.actions.forEach((a, j) => { a.id = s.id + "-" + String.fromCharCode(97 + j); });
+  });
+}
+
+function buildConfig() {
+  return {
+    languages: [...state.languages],
+    sequenceName: state.sequenceName || "Default Sequence",
+    steps: state.steps.map(s => ({
+      id: s.id, title: s.title,
+      actions: s.actions.map(a => {
+        const obj = {
+          id: a.id, name: a.name, en_des: a.en_des || "",
+          audioFileNames: {},
+          isMandatory: a.isMandatory
+        };
+        state.languages.forEach(lang => {
+          const files = (a.audioFileNames[lang] || []).filter(Boolean);
+          if (files.length) obj.audioFileNames[lang] = files;
+        });
+        if (a.imageFileName) obj.imageFileName = a.imageFileName;
+        const subNames = {};
+        const subFiles = {};
+        const subEnDes = {};
+        state.languages.forEach(lang => {
+          if (a.subAudioName[lang]) subNames[lang] = a.subAudioName[lang];
+          if (a.subAudioFileName[lang]) subFiles[lang] = a.subAudioFileName[lang];
+          if (a.subAudioEnDes && a.subAudioEnDes[lang]) subEnDes[lang] = a.subAudioEnDes[lang];
+        });
+        if (Object.keys(subNames).length) obj.subAudioName = subNames;
+        if (Object.keys(subFiles).length) obj.subAudioFileName = subFiles;
+        if (Object.keys(subEnDes).length) obj.subAudioEnDes = subEnDes;
+        return obj;
+      })
+    })),
+    otherBroadcasts: state.broadcasts.filter(b => b.name || Object.values(b.audioFileName).some(Boolean)).map(b => {
+      const obj = { name: b.name };
+      const af = {};
+      const enDes = {};
+      state.languages.forEach(lang => {
+        if (b.audioFileName[lang]) af[lang] = b.audioFileName[lang];
+        if (b.en_des && b.en_des[lang]) enDes[lang] = b.en_des[lang];
+      });
+      if (Object.keys(af).length) obj.audioFileName = af;
+      if (Object.keys(enDes).length) obj.en_des = enDes;
+      return obj;
+    })
+  };
+}
+
+document.getElementById("sequenceName").oninput = function() { state.sequenceName = this.value; saveDraft(); };
+
+document.getElementById("btnAddLang").onclick = () => {
+  const input = document.getElementById("newLangInput");
+  const name = input.value.trim();
+  if (!name) return;
+  if (state.languages.includes(name)) { alert("Language already exists."); return; }
+  state.languages.push(name);
+  state.steps.forEach(s => s.actions.forEach(a => {
+    a.audioFileNames[name] = [];
+    a.subAudioFileName[name] = "";
+    a.subAudioName[name] = "";
+    if (!a.subAudioEnDes) a.subAudioEnDes = {};
+    a.subAudioEnDes[name] = "";
+  }));
+  state.broadcasts.forEach(b => { b.audioFileName[name] = ""; if (!b.en_des) b.en_des = {}; b.en_des[name] = ""; });
+  input.value = "";
+  saveDraft(); render();
+};
+
+document.getElementById("newLangInput").onkeydown = (e) => {
+  if (e.key === "Enter") document.getElementById("btnAddLang").click();
+};
+
+document.getElementById("btnAddStep").onclick = () => {
+  state.steps.push(defaultStep());
+  reindexSteps();
+  saveDraft(); render();
+};
+
+document.getElementById("btnAddBroadcast").onclick = () => {
+  state.broadcasts.push(defaultBroadcast());
+  saveDraft(); render();
+};
+
+document.getElementById("btnClearDraft").onclick = async () => {
+  if (!confirm("Sure to clear all input data?")) return;
+  stopAudioPreview();
+  localStorage.removeItem(DRAFT_KEY);
+  await store.clear();
+  fileStore = {};
+  state = { languages: ["中文"], sequenceName: "", steps: [], broadcasts: [] };
+  render();
+};
+
+document.getElementById("btnImport").onclick = () => {
+  document.getElementById("fileImport").click();
+};
+
+document.getElementById("fileImport").onchange = async (e) => {
+  const file = e.target.files[0];
+  if (!file) return;
+  stopAudioPreview();
+
+  try {
+    const zip = await JSZip.loadAsync(file);
+    const configEntry = zip.file("config.json");
+    if (!configEntry) { alert("config.json not found."); return; }
+
+    const configText = await configEntry.async("text");
+    const config = JSON.parse(configText);
+
+    state.languages = (config.languages && config.languages.length) ? [...config.languages] : ["中文"];
+    state.sequenceName = config.sequenceName || "";
+    state.steps = (config.steps || []).map(s => ({
+      ...s, uid: uid(),
+      actions: s.actions.map(a => {
+        const na = { ...a, uid: uid() };
+        ensureLangFields(na);
+        return na;
+      })
+    }));
+    state.broadcasts = (config.otherBroadcasts || []).map(b => {
+      const nb = { ...b, uid: uid() };
+      ensureBroadcastLangFields(nb);
+      return nb;
+    });
+
+    fileStore = {};
+    const audioFiles = zip.folder("audio");
+    if (audioFiles) {
+      const audioEntries = [];
+      audioFiles.forEach((path, entry) => { if (!entry.dir) audioEntries.push({ path, entry }); });
+      for (const { path, entry } of audioEntries) {
+        const fileName = path.split("/").pop();
+        const blob = await entry.async("blob");
+        fileStore[fileName] = new File([blob], fileName, { type: blob.type });
+      }
+    }
+    const imageFiles = zip.folder("image");
+    if (imageFiles) {
+      const imageEntries = [];
+      imageFiles.forEach((path, entry) => { if (!entry.dir) imageEntries.push({ path, entry }); });
+      for (const { path, entry } of imageEntries) {
+        const fileName = path.split("/").pop();
+        const blob = await entry.async("blob");
+        fileStore[fileName] = new File([blob], fileName, { type: blob.type });
+      }
+    }
+
+    reindexSteps();
+    await saveDraft();
+    await saveFiles();
+    render();
+    alert("Success!");
+  } catch (err) {
+    alert("Failed: " + err.message);
+  }
+  e.target.value = "";
+};
+
+document.getElementById("btnExport").onclick = async () => {
+  stopAudioPreview();
+  for (let si = 0; si < state.steps.length; si++) {
+    for (let ai = 0; ai < state.steps[si].actions.length; ai++) {
+      const a = state.steps[si].actions[ai];
+      if (!a.en_des || !a.en_des.trim()) {
+        alert(`Step ${state.steps[si].id}, Action ${String.fromCharCode(65 + ai)}: EN Description is required.`);
+        return;
+      }
+      if (a.en_des.length > 32) {
+        alert(`Step ${state.steps[si].id}, Action ${String.fromCharCode(65 + ai)}: EN Description must be 32 characters or less.`);
+        return;
+      }
+      for (const lang of state.languages) {
+        if (a.subAudioFileName && a.subAudioFileName[lang]) {
+          const subEnDes = (a.subAudioEnDes && a.subAudioEnDes[lang]) || "";
+          if (!subEnDes.trim()) {
+            alert(`Step ${state.steps[si].id}, Action ${String.fromCharCode(65 + ai)}, Sub Audio (${lang}): EN Description is required.`);
+            return;
+          }
+          if (subEnDes.length > 32) {
+            alert(`Step ${state.steps[si].id}, Action ${String.fromCharCode(65 + ai)}, Sub Audio (${lang}): EN Description must be 32 characters or less.`);
+            return;
+          }
+        }
+      }
+    }
+  }
+  for (let bi = 0; bi < state.broadcasts.length; bi++) {
+    const b = state.broadcasts[bi];
+    for (const lang of state.languages) {
+      if (b.audioFileName && b.audioFileName[lang]) {
+        const enDes = (b.en_des && b.en_des[lang]) || "";
+        if (!enDes.trim()) {
+          alert(`Broadcast "${b.name || bi + 1}" (${lang}): EN Description is required.`);
+          return;
+        }
+        if (enDes.length > 32) {
+          alert(`Broadcast "${b.name || bi + 1}" (${lang}): EN Description must be 32 characters or less.`);
+          return;
+        }
+      }
+    }
+  }
+  const config = buildConfig();
+  const zip = new JSZip();
+  zip.file("config.json", JSON.stringify(config, null, 2));
+
+  const audioFolder = zip.folder("audio");
+  const imageFolder = zip.folder("image");
+  const seen = new Set();
+
+  state.steps.forEach(s => {
+    s.actions.forEach(a => {
+      Object.values(a.audioFileNames || {}).forEach(arr => {
+        arr.forEach(fn => {
+          if (fileStore[fn] && !seen.has(fn)) { audioFolder.file(fn, fileStore[fn]); seen.add(fn); }
+        });
+      });
+      Object.values(a.subAudioFileName || {}).forEach(fn => {
+        if (fn && fileStore[fn] && !seen.has(fn)) { audioFolder.file(fn, fileStore[fn]); seen.add(fn); }
+      });
+      if (a.imageFileName && fileStore[a.imageFileName] && !seen.has(a.imageFileName)) {
+        imageFolder.file(a.imageFileName, fileStore[a.imageFileName]); seen.add(a.imageFileName);
+      }
+    });
+  });
+  state.broadcasts.forEach(b => {
+    Object.values(b.audioFileName || {}).forEach(fn => {
+      if (fn && fileStore[fn] && !seen.has(fn)) { audioFolder.file(fn, fileStore[fn]); seen.add(fn); }
+    });
+  });
+
+  try {
+    const blob = await zip.generateAsync({ type: "blob" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url; a.download = "sequence_pkg.zip";
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  } catch (e) {
+    console.error("Export error:", e);
+    alert("Failed: " + e.message);
+  }
+};
+
+(async () => {
+  const restored = await restoreDraft();
+  if (restored && state.steps.length === 0 && state.broadcasts.length === 0) {
+    state.steps.push(defaultStep());
+  }
+  if (!restored) {
+    state.steps.push(defaultStep());
+  }
+  reindexSteps();
+  render();
+})();
+</script>
+</body>
+</html>
