@@ -1,6 +1,6 @@
 # Audio-Sequence-Editor
 
-Couple With Audio Panel to deliver highly interaction experience. 
+Couple with Audio Panel to deliver highly interaction experience. 
 
 ## Prepare your first run
 
