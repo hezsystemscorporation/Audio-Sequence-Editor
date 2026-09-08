@@ -42,3 +42,16 @@ Visit `localhost:6532` using your web browser.
 ```python
 app.run(debug=True, port=6532)
 ```
+
+## If suffering poor network
+
+Use local implementation instead. 
+
+Before run this version, install the required JavaScript files. 
+
+```
+mkdir js
+curl -L -A "Mozilla/5.0" -o js/tailwindcss.js "https://cdn.tailwindcss.com"
+curl -o js/localforage.min.js https://cdn.jsdelivr.net/npm/localforage@1.10.0/dist/localforage.min.js
+curl -o js/jszip.min.js https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js
+```
