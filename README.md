@@ -55,3 +55,5 @@ curl -L -A "Mozilla/5.0" -o js/tailwindcss.js "https://cdn.tailwindcss.com"
 curl -o js/localforage.min.js https://cdn.jsdelivr.net/npm/localforage@1.10.0/dist/localforage.min.js
 curl -o js/jszip.min.js https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js
 ```
+
+**Be sure to rename it before running. **
