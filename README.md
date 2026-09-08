@@ -49,7 +49,7 @@ Use local implementation instead.
 
 Before run this version, install the required JavaScript files. 
 
-```
+```bash
 mkdir js
 curl -L -A "Mozilla/5.0" -o js/tailwindcss.js "https://cdn.tailwindcss.com"
 curl -o js/localforage.min.js https://cdn.jsdelivr.net/npm/localforage@1.10.0/dist/localforage.min.js
